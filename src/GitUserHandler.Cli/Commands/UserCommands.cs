@@ -288,14 +288,15 @@ public sealed class UserCommands
             return;
         }
 
+        var relevantKeys = new[] { "user.", "commit.gpgsign", "gpg.", "credential." };
         var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Where(l => l.Contains("user.", StringComparison.OrdinalIgnoreCase))
+            .Where(l => relevantKeys.Any(k => l.Contains(k, StringComparison.OrdinalIgnoreCase)))
             .Select(l => l.TrimEnd('\r'))
             .ToList();
 
         if (lines.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[{Theme.Warning}]No git user configuration found.[/]");
+            AnsiConsole.MarkupLine($"[{Theme.Warning}]No git user or signing configuration found.[/]");
             return;
         }
 
