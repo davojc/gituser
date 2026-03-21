@@ -132,8 +132,22 @@ public sealed class SetupCommands
             return false;
         }
 
+        string credentialHost;
+        try
+        {
+            credentialHost = AnsiConsole.Prompt(
+                new TextPrompt<string>($"[{Theme.Command}]Credential host[/] [{Theme.Muted}](leave empty to skip)[/]:")
+                    .DefaultValue("https://github.com")
+                    .AllowEmpty());
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+
         term = term.Trim().ToLowerInvariant();
-        var path = await service.CreateUserProfileConfigAsync(term, name, email);
+        var credHost = string.IsNullOrWhiteSpace(credentialHost) ? null : credentialHost.Trim();
+        var path = await service.CreateUserProfileConfigAsync(term, name, email, credHost);
         AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Created [{Theme.Emphasis}]{Markup.Escape(Path.GetFileName(path))}[/] in [{Theme.Emphasis}]{Markup.Escape(service.TargetDir)}[/]");
         return true;
     }

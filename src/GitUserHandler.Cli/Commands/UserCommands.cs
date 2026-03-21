@@ -107,9 +107,15 @@ public sealed class UserCommands
                     ? ValidationResult.Success()
                     : ValidationResult.Error($"[{Theme.Error}]Label is required.[/]")));
 
+        var credentialHost = AnsiConsole.Prompt(
+            new TextPrompt<string>($"[{Theme.Command}]Credential host[/] [{Theme.Muted}](leave empty to skip)[/]:")
+                .DefaultValue("https://github.com")
+                .AllowEmpty());
+
         name = name.Trim();
         email = email.Trim();
         label = label.Trim().ToLowerInvariant();
+        credentialHost = string.IsNullOrWhiteSpace(credentialHost) ? null : credentialHost.Trim();
 
         var conflict = await service.CheckForConflictAsync(label, name, email);
         if (conflict is not null)
@@ -118,8 +124,91 @@ public sealed class UserCommands
             return;
         }
 
-        var path = await service.CreateUserProfileConfigAsync(label, name, email);
+        var path = await service.CreateUserProfileConfigAsync(label, name, email, credentialHost);
         AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Created [{Theme.Emphasis}]{Markup.Escape(Path.GetFileName(path))}[/] in [{Theme.Emphasis}]{Markup.Escape(service.TargetDir)}[/]");
+    }
+
+    /// <summary>Edit an existing git user profile.</summary>
+    [Command("edit")]
+    public async Task Edit()
+    {
+        var service = ServiceFactory.CreateSetupService();
+        var profiles = await service.GetUserProfilesAsync();
+
+        if (profiles.Count == 0)
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Warning}]No profiles configured yet.[/] Use [{Theme.Command}]add[/] to create one first.");
+            return;
+        }
+
+        var profileMap = profiles.ToDictionary(
+            p => $"{p.Label}  {p.Name} <{p.Email}>",
+            p => p.Label);
+
+        var selected = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title($"[{Theme.Command}]Select a profile to edit[/]:")
+                .HighlightStyle(ThemeHelper.ParseStyle(Theme.Command))
+                .AddChoices(profileMap.Keys));
+
+        var selectedLabel = profileMap[selected];
+        var details = await service.GetProfileDetailsAsync(selectedLabel);
+        if (details is null)
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Error}]Could not read profile '{Markup.Escape(selectedLabel)}'.[/]");
+            return;
+        }
+
+        var (_, currentName, currentEmail, currentCredHost) = details.Value;
+
+        var name = AnsiConsole.Prompt(
+            new TextPrompt<string>($"[{Theme.Command}]Git username[/]:")
+                .DefaultValue(currentName)
+                .Validate(input => !string.IsNullOrWhiteSpace(input)
+                    ? ValidationResult.Success()
+                    : ValidationResult.Error($"[{Theme.Error}]Username is required.[/]")));
+
+        var email = AnsiConsole.Prompt(
+            new TextPrompt<string>($"[{Theme.Command}]Email address[/]:")
+                .DefaultValue(currentEmail)
+                .Validate(input => !string.IsNullOrWhiteSpace(input)
+                    ? ValidationResult.Success()
+                    : ValidationResult.Error($"[{Theme.Error}]Email is required.[/]")));
+
+        var credentialHost = AnsiConsole.Prompt(
+            new TextPrompt<string>($"[{Theme.Command}]Credential host[/] [{Theme.Muted}](leave empty to skip)[/]:")
+                .DefaultValue(currentCredHost ?? "https://github.com")
+                .AllowEmpty());
+
+        var label = AnsiConsole.Prompt(
+            new TextPrompt<string>($"[{Theme.Command}]Label[/]:")
+                .DefaultValue(selectedLabel)
+                .Validate(input => !string.IsNullOrWhiteSpace(input)
+                    ? ValidationResult.Success()
+                    : ValidationResult.Error($"[{Theme.Error}]Label is required.[/]")));
+
+        name = name.Trim();
+        email = email.Trim();
+        label = label.Trim().ToLowerInvariant();
+        var credHost = string.IsNullOrWhiteSpace(credentialHost) ? null : credentialHost.Trim();
+
+        var conflict = await service.CheckForConflictAsync(label, name, email, excludeLabel: selectedLabel);
+        if (conflict is not null)
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Error}]{Markup.Escape(conflict)}[/]");
+            return;
+        }
+
+        // If label changed, delete old file and update includeIf references
+        if (!string.Equals(label, selectedLabel, StringComparison.OrdinalIgnoreCase))
+        {
+            service.DeleteProfileConfig(selectedLabel);
+            await service.UpdateIncludeIfLabelsAsync(selectedLabel, label);
+            AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Updated includeIf references from [{Theme.Emphasis}]{Markup.Escape(selectedLabel)}[/] to [{Theme.Emphasis}]{Markup.Escape(label)}[/]");
+        }
+
+        var path = await service.CreateUserProfileConfigAsync(label, name, email, credHost);
+        AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Updated [{Theme.Emphasis}]{Markup.Escape(Path.GetFileName(path))}[/] in [{Theme.Emphasis}]{Markup.Escape(service.TargetDir)}[/]");
     }
 
     /// <summary>Show the current git user configuration and its origin.</summary>

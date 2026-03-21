@@ -62,11 +62,18 @@ public sealed class SetupService(IEnvironmentProvider environment)
         return ParseGitConfigUser(content);
     }
 
-    public async Task<string> CreateUserProfileConfigAsync(string term, string name, string email, CancellationToken cancellationToken = default)
+    public async Task<string> CreateUserProfileConfigAsync(string term, string name, string email, string? credentialHost = null, CancellationToken cancellationToken = default)
     {
         var fileName = $".gitconfig-{term}";
         var filePath = Path.Combine(TargetDir, fileName);
         var content = $"[user]{Environment.NewLine}\tname = {name}{Environment.NewLine}\temail = {email}{Environment.NewLine}";
+
+        if (!string.IsNullOrWhiteSpace(credentialHost))
+        {
+            var host = credentialHost.Trim().TrimEnd('/');
+            content += $"{Environment.NewLine}[credential \"{host}\"]{Environment.NewLine}\tusername = {name}{Environment.NewLine}";
+        }
+
         await environment.WriteFileAsync(filePath, content, cancellationToken);
         return filePath;
     }
@@ -107,6 +114,34 @@ public sealed class SetupService(IEnvironmentProvider environment)
         return name is not null && email is not null ? (name, email) : null;
     }
 
+    internal static string? ParseCredentialHost(string content)
+    {
+        var match = Regex.Match(content, @"\[credential\s+""([^""]+)""\]", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    public async Task<(string Label, string Name, string Email, string? CredentialHost)?> GetProfileDetailsAsync(string label, CancellationToken cancellationToken = default)
+    {
+        var filePath = Path.Combine(TargetDir, $".gitconfig-{label}");
+        if (!environment.FileExists(filePath))
+            return null;
+
+        var content = await environment.ReadFileAsync(filePath, cancellationToken);
+        var user = ParseGitConfigUser(content);
+        if (user is null)
+            return null;
+
+        var credentialHost = ParseCredentialHost(content);
+        return (label, user.Value.Name, user.Value.Email, credentialHost);
+    }
+
+    public void DeleteProfileConfig(string label)
+    {
+        var filePath = Path.Combine(TargetDir, $".gitconfig-{label}");
+        if (environment.FileExists(filePath))
+            File.Delete(filePath);
+    }
+
     public async Task<IReadOnlyList<(string Label, string Name, string Email)>> GetUserProfilesAsync(CancellationToken cancellationToken = default)
     {
         if (!environment.DirectoryExists(TargetDir))
@@ -128,12 +163,18 @@ public sealed class SetupService(IEnvironmentProvider environment)
         return profiles;
     }
 
-    public async Task<string?> CheckForConflictAsync(string label, string name, string email, CancellationToken cancellationToken = default)
+    public Task<string?> CheckForConflictAsync(string label, string name, string email, CancellationToken cancellationToken = default)
+        => CheckForConflictAsync(label, name, email, excludeLabel: null, cancellationToken);
+
+    public async Task<string?> CheckForConflictAsync(string label, string name, string email, string? excludeLabel, CancellationToken cancellationToken = default)
     {
         var profiles = await GetUserProfilesAsync(cancellationToken);
 
         foreach (var p in profiles)
         {
+            if (excludeLabel is not null && string.Equals(p.Label, excludeLabel, StringComparison.OrdinalIgnoreCase))
+                continue;
+
             if (string.Equals(p.Label, label, StringComparison.OrdinalIgnoreCase))
                 return $"Label '{label}' is already in use by {p.Name} <{p.Email}>.";
             if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
@@ -143,6 +184,22 @@ public sealed class SetupService(IEnvironmentProvider environment)
         }
 
         return null;
+    }
+
+    public async Task UpdateIncludeIfLabelsAsync(string oldLabel, string newLabel, CancellationToken cancellationToken = default)
+    {
+        if (!environment.FileExists(GitConfigTargetPath))
+            return;
+
+        var content = await environment.ReadFileAsync(GitConfigTargetPath, cancellationToken);
+        var oldPath = $".gitconfig-{oldLabel}";
+        var newPath = $".gitconfig-{newLabel}";
+
+        if (!content.Contains(oldPath))
+            return;
+
+        var updated = content.Replace(oldPath, newPath);
+        await environment.WriteFileAsync(GitConfigTargetPath, updated, cancellationToken);
     }
 
     public bool IsGitRepo(string directory) =>
