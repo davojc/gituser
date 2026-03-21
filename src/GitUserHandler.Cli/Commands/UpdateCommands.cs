@@ -26,7 +26,7 @@ public sealed class UpdateCommands
             return;
         }
 
-        var (latestVersion, assetUrl, assetName) = result.Value;
+        var (latestVersion, assetUrl, assetName, checksumUrl) = result.Value;
 
         if (assetUrl is null || assetName is null)
         {
@@ -42,8 +42,9 @@ public sealed class UpdateCommands
             .SpinnerStyle(ThemeHelper.ParseStyle(Theme.Command))
             .StartAsync("Downloading...", async ctx =>
             {
-                var newBinary = await service.DownloadAndExtractAsync(assetUrl, assetName);
+                var newBinary = await service.DownloadAndExtractAsync(assetUrl, assetName, checksumUrl);
 
+                ctx.Status("Verified checksum.");
                 ctx.Status("Installing...");
                 UpdateService.ReplaceCurrentBinary(newBinary);
             });

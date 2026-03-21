@@ -106,13 +106,26 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path publish/gituser.exe -DestinationPath ${{ matrix.artifact }}.zip
 
+      - name: Generate checksum (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Generate checksum (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.artifact }}.zip").Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii "${{ matrix.artifact }}.zip.sha256"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
             ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.tar.gz.sha256
             ${{ matrix.artifact }}.zip
+            ${{ matrix.artifact }}.zip.sha256
 
   release:
     needs: [version, build]
@@ -132,8 +145,8 @@ jobs:
           TAG="${{ needs.version.outputs.tag }}"
           VERSION="${{ needs.version.outputs.version }}"
 
-          # Collect all archives
-          FILES=$(find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \))
+          # Collect all archives and checksums
+          FILES=$(find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \))
 
           # Create tag and release
           git tag "$TAG"

@@ -36,7 +36,7 @@ public sealed class UpdateService
         return Version.TryParse(version, out var v) ? v : new Version(0, 0, 0);
     }
 
-    public async Task<(Version Version, string? AssetUrl, string? AssetName)?> CheckForUpdateAsync(CancellationToken cancellationToken = default)
+    public async Task<(Version Version, string? AssetUrl, string? AssetName, string? ChecksumUrl)?> CheckForUpdateAsync(CancellationToken cancellationToken = default)
     {
         GitHubRelease? release;
         try
@@ -63,10 +63,13 @@ public sealed class UpdateService
         var asset = release.Assets?.FirstOrDefault(a =>
             string.Equals(a.Name, expectedAssetName, StringComparison.OrdinalIgnoreCase));
 
-        return (latestVersion, asset?.BrowserDownloadUrl, asset?.Name);
+        var checksumAsset = release.Assets?.FirstOrDefault(a =>
+            string.Equals(a.Name, expectedAssetName + ".sha256", StringComparison.OrdinalIgnoreCase));
+
+        return (latestVersion, asset?.BrowserDownloadUrl, asset?.Name, checksumAsset?.BrowserDownloadUrl);
     }
 
-    public async Task<string> DownloadAndExtractAsync(string assetUrl, string assetName, CancellationToken cancellationToken = default)
+    public async Task<string> DownloadAndExtractAsync(string assetUrl, string assetName, string? checksumUrl = null, CancellationToken cancellationToken = default)
     {
         var tempDir = Path.Combine(Path.GetTempPath(), $"gituser-update-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
@@ -78,6 +81,11 @@ public sealed class UpdateService
             response.EnsureSuccessStatusCode();
             await using var fs = File.Create(archivePath);
             await response.Content.CopyToAsync(fs, cancellationToken);
+        }
+
+        if (checksumUrl is not null)
+        {
+            await VerifyChecksumAsync(archivePath, checksumUrl, cancellationToken);
         }
 
         var extractDir = Path.Combine(tempDir, "extracted");
@@ -136,6 +144,27 @@ public sealed class UpdateService
                 File.Move(backupPath, currentExe);
             throw;
         }
+    }
+
+    private static async Task VerifyChecksumAsync(string filePath, string checksumUrl, CancellationToken cancellationToken)
+    {
+        var checksumText = await Http.GetStringAsync(checksumUrl, cancellationToken);
+        var expectedHash = checksumText.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0].Trim().ToLowerInvariant();
+
+        var actualHash = await ComputeSha256Async(filePath, cancellationToken);
+
+        if (!string.Equals(expectedHash, actualHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Checksum verification failed. Expected: {expectedHash}, Got: {actualHash}");
+        }
+    }
+
+    private static async Task<string> ComputeSha256Async(string filePath, CancellationToken cancellationToken)
+    {
+        await using var stream = File.OpenRead(filePath);
+        var hashBytes = await System.Security.Cryptography.SHA256.HashDataAsync(stream, cancellationToken);
+        return Convert.ToHexStringLower(hashBytes);
     }
 
     internal static string GetExpectedAssetName()

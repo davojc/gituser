@@ -112,6 +112,25 @@ public sealed class UserCommands
                 .DefaultValue("https://github.com")
                 .AllowEmpty());
 
+        var gpgSign = AnsiConsole.Confirm($"[{Theme.Command}]Enable commit signing?[/]", defaultValue: false);
+        string? gpgFormat = null;
+        string? signingKey = null;
+
+        if (gpgSign)
+        {
+            gpgFormat = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title($"[{Theme.Command}]Signing format[/]:")
+                    .HighlightStyle(ThemeHelper.ParseStyle(Theme.Command))
+                    .AddChoices("ssh", "gpg", "x509"));
+
+            signingKey = AnsiConsole.Prompt(
+                new TextPrompt<string>($"[{Theme.Command}]Signing key path[/] [{Theme.Muted}](e.g. ~/.ssh/id_ed25519.pub)[/]:")
+                    .Validate(input => !string.IsNullOrWhiteSpace(input)
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error($"[{Theme.Error}]Signing key is required when signing is enabled.[/]")));
+        }
+
         name = name.Trim();
         email = email.Trim();
         label = label.Trim().ToLowerInvariant();
@@ -124,7 +143,7 @@ public sealed class UserCommands
             return;
         }
 
-        var path = await service.CreateUserProfileConfigAsync(label, name, email, credentialHost);
+        var path = await service.CreateUserProfileConfigAsync(label, name, email, credentialHost, gpgSign, gpgFormat, signingKey);
         AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Created [{Theme.Emphasis}]{Markup.Escape(Path.GetFileName(path))}[/] in [{Theme.Emphasis}]{Markup.Escape(service.TargetDir)}[/]");
     }
 
@@ -159,26 +178,56 @@ public sealed class UserCommands
             return;
         }
 
-        var (_, currentName, currentEmail, currentCredHost) = details.Value;
+        var d = details;
 
         var name = AnsiConsole.Prompt(
             new TextPrompt<string>($"[{Theme.Command}]Git username[/]:")
-                .DefaultValue(currentName)
+                .DefaultValue(d.Name)
                 .Validate(input => !string.IsNullOrWhiteSpace(input)
                     ? ValidationResult.Success()
                     : ValidationResult.Error($"[{Theme.Error}]Username is required.[/]")));
 
         var email = AnsiConsole.Prompt(
             new TextPrompt<string>($"[{Theme.Command}]Email address[/]:")
-                .DefaultValue(currentEmail)
+                .DefaultValue(d.Email)
                 .Validate(input => !string.IsNullOrWhiteSpace(input)
                     ? ValidationResult.Success()
                     : ValidationResult.Error($"[{Theme.Error}]Email is required.[/]")));
 
         var credentialHost = AnsiConsole.Prompt(
             new TextPrompt<string>($"[{Theme.Command}]Credential host[/] [{Theme.Muted}](leave empty to skip)[/]:")
-                .DefaultValue(currentCredHost ?? "https://github.com")
+                .DefaultValue(d.CredentialHost ?? "https://github.com")
                 .AllowEmpty());
+
+        var gpgSign = AnsiConsole.Confirm($"[{Theme.Command}]Enable commit signing?[/]", defaultValue: d.GpgSign);
+        string? gpgFormat = null;
+        string? signingKey = null;
+
+        if (gpgSign)
+        {
+            var formatChoices = new[] { "ssh", "gpg", "x509" };
+            var defaultFormat = d.GpgFormat ?? "ssh";
+            gpgFormat = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title($"[{Theme.Command}]Signing format[/]:")
+                    .HighlightStyle(ThemeHelper.ParseStyle(Theme.Command))
+                    .AddChoices(formatChoices)
+                    .UseConverter(x => x == defaultFormat ? $"{x} (current)" : x));
+
+            // Strip the " (current)" suffix if present
+            if (gpgFormat.EndsWith(" (current)"))
+                gpgFormat = gpgFormat[..^" (current)".Length];
+
+            var keyPrompt = new TextPrompt<string>($"[{Theme.Command}]Signing key path[/] [{Theme.Muted}](e.g. ~/.ssh/id_ed25519.pub)[/]:")
+                .Validate(input => !string.IsNullOrWhiteSpace(input)
+                    ? ValidationResult.Success()
+                    : ValidationResult.Error($"[{Theme.Error}]Signing key is required when signing is enabled.[/]"));
+
+            if (!string.IsNullOrWhiteSpace(d.SigningKey))
+                keyPrompt.DefaultValue(d.SigningKey);
+
+            signingKey = AnsiConsole.Prompt(keyPrompt);
+        }
 
         var label = AnsiConsole.Prompt(
             new TextPrompt<string>($"[{Theme.Command}]Label[/]:")
@@ -207,7 +256,7 @@ public sealed class UserCommands
             AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Updated includeIf references from [{Theme.Emphasis}]{Markup.Escape(selectedLabel)}[/] to [{Theme.Emphasis}]{Markup.Escape(label)}[/]");
         }
 
-        var path = await service.CreateUserProfileConfigAsync(label, name, email, credHost);
+        var path = await service.CreateUserProfileConfigAsync(label, name, email, credHost, gpgSign, gpgFormat, signingKey);
         AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Updated [{Theme.Emphasis}]{Markup.Escape(Path.GetFileName(path))}[/] in [{Theme.Emphasis}]{Markup.Escape(service.TargetDir)}[/]");
     }
 
@@ -280,5 +329,98 @@ public sealed class UserCommands
         }
 
         AnsiConsole.Write(table);
+    }
+
+    /// <summary>Set commit signing on or off for the current git repository.</summary>
+    [Command("localsign")]
+    public async Task LocalSign()
+    {
+        var service = ServiceFactory.CreateSetupService();
+        var cwd = Directory.GetCurrentDirectory();
+
+        if (!service.IsGitRepo(cwd))
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Error}]Not a git repository root.[/] [{Theme.Muted}]Run this command from the root of a git repo.[/]");
+            return;
+        }
+
+        var enable = AnsiConsole.Confirm($"[{Theme.Command}]Enable commit signing for this repo?[/]", defaultValue: true);
+        var value = enable ? "true" : "false";
+
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = $"config --local commit.gpgsign {value}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }
+        };
+
+        process.Start();
+        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        if (process.ExitCode != 0)
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Error}]Failed:[/] [{Theme.Muted}]{Markup.Escape(error.Trim())}[/]");
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Set [{Theme.Command}]commit.gpgsign[/] = [{Theme.Emphasis}]{value}[/] for this repo.");
+    }
+
+    /// <summary>Remove the user profile from the current git repository.</summary>
+    [Command("clear")]
+    public async Task Clear()
+    {
+        var service = ServiceFactory.CreateSetupService();
+        var cwd = Directory.GetCurrentDirectory();
+
+        if (!service.IsGitRepo(cwd))
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Error}]Not a git repository root.[/] [{Theme.Muted}]Run this command from the root of a git repo.[/]");
+            return;
+        }
+
+        var existingLabel = await service.GetExistingIncludeIfLabelAsync(cwd);
+        if (existingLabel is null)
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Warning}]No includeIf configured for this directory.[/]");
+            return;
+        }
+
+        await service.RemoveIncludeIfAsync(cwd);
+        AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Removed [{Theme.Command}]includeIf[/] for [{Theme.Emphasis}]{Markup.Escape(cwd)}[/] (was [{Theme.Emphasis}]{Markup.Escape(existingLabel)}[/]).");
+
+        var removeGpgSign = AnsiConsole.Confirm($"[{Theme.Command}]Also remove local commit.gpgsign setting?[/]", defaultValue: true);
+        if (removeGpgSign)
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "git",
+                    Arguments = "config --local --unset commit.gpgsign",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            // Exit code 5 means the key didn't exist — that's fine
+            if (process.ExitCode is 0 or 5)
+            {
+                AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Removed local [{Theme.Command}]commit.gpgsign[/] setting.");
+            }
+        }
     }
 }

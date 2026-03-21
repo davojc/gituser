@@ -62,11 +62,29 @@ public sealed class SetupService(IEnvironmentProvider environment)
         return ParseGitConfigUser(content);
     }
 
-    public async Task<string> CreateUserProfileConfigAsync(string term, string name, string email, string? credentialHost = null, CancellationToken cancellationToken = default)
+    public async Task<string> CreateUserProfileConfigAsync(
+        string term, string name, string email,
+        string? credentialHost = null,
+        bool gpgSign = false, string? gpgFormat = null, string? signingKey = null,
+        CancellationToken cancellationToken = default)
     {
         var fileName = $".gitconfig-{term}";
         var filePath = Path.Combine(TargetDir, fileName);
         var content = $"[user]{Environment.NewLine}\tname = {name}{Environment.NewLine}\temail = {email}{Environment.NewLine}";
+
+        if (gpgSign && !string.IsNullOrWhiteSpace(signingKey))
+        {
+            content += $"\tsigningkey = {signingKey.Trim()}{Environment.NewLine}";
+        }
+
+        if (gpgSign)
+        {
+            content += $"{Environment.NewLine}[commit]{Environment.NewLine}\tgpgsign = true{Environment.NewLine}";
+            if (!string.IsNullOrWhiteSpace(gpgFormat))
+            {
+                content += $"{Environment.NewLine}[gpg]{Environment.NewLine}\tformat = {gpgFormat.Trim()}{Environment.NewLine}";
+            }
+        }
 
         if (!string.IsNullOrWhiteSpace(credentialHost))
         {
@@ -120,7 +138,58 @@ public sealed class SetupService(IEnvironmentProvider environment)
         return match.Success ? match.Groups[1].Value : null;
     }
 
-    public async Task<(string Label, string Name, string Email, string? CredentialHost)?> GetProfileDetailsAsync(string label, CancellationToken cancellationToken = default)
+    internal static bool ParseGpgSign(string content)
+    {
+        var match = Regex.Match(content, @"gpgsign\s*=\s*(\w+)", RegexOptions.IgnoreCase);
+        return match.Success && string.Equals(match.Groups[1].Value.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static string? ParseGpgFormat(string content)
+    {
+        var inGpgSection = false;
+        foreach (var rawLine in content.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith('['))
+            {
+                inGpgSection = line.StartsWith("[gpg]", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+            if (!inGpgSection) continue;
+
+            var match = Regex.Match(line, @"^format\s*=\s*(.+)$", RegexOptions.IgnoreCase);
+            if (match.Success)
+                return match.Groups[1].Value.Trim();
+        }
+        return null;
+    }
+
+    internal static string? ParseSigningKey(string content)
+    {
+        var inUserSection = false;
+        foreach (var rawLine in content.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith('['))
+            {
+                inUserSection = line.StartsWith("[user]", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+            if (!inUserSection) continue;
+
+            var match = Regex.Match(line, @"^signingkey\s*=\s*(.+)$", RegexOptions.IgnoreCase);
+            if (match.Success)
+                return match.Groups[1].Value.Trim();
+        }
+        return null;
+    }
+
+    public record ProfileDetails(
+        string Label, string Name, string Email,
+        string? CredentialHost,
+        bool GpgSign, string? GpgFormat, string? SigningKey);
+
+    public async Task<ProfileDetails?> GetProfileDetailsAsync(string label, CancellationToken cancellationToken = default)
     {
         var filePath = Path.Combine(TargetDir, $".gitconfig-{label}");
         if (!environment.FileExists(filePath))
@@ -131,8 +200,10 @@ public sealed class SetupService(IEnvironmentProvider environment)
         if (user is null)
             return null;
 
-        var credentialHost = ParseCredentialHost(content);
-        return (label, user.Value.Name, user.Value.Email, credentialHost);
+        return new ProfileDetails(
+            label, user.Value.Name, user.Value.Email,
+            ParseCredentialHost(content),
+            ParseGpgSign(content), ParseGpgFormat(content), ParseSigningKey(content));
     }
 
     public void DeleteProfileConfig(string label)
@@ -200,6 +271,43 @@ public sealed class SetupService(IEnvironmentProvider environment)
 
         var updated = content.Replace(oldPath, newPath);
         await environment.WriteFileAsync(GitConfigTargetPath, updated, cancellationToken);
+    }
+
+    public async Task RemoveIncludeIfAsync(string repoDir, CancellationToken cancellationToken = default)
+    {
+        if (!environment.FileExists(GitConfigTargetPath))
+            return;
+
+        var content = await environment.ReadFileAsync(GitConfigTargetPath, cancellationToken);
+        var gitDir = NormalizeGitDir(repoDir);
+        var lines = content.Split('\n').ToList();
+        var i = 0;
+
+        while (i < lines.Count)
+        {
+            var trimmed = lines[i].Trim();
+            if (trimmed.StartsWith("[includeIf", StringComparison.OrdinalIgnoreCase)
+                && trimmed.Contains(gitDir, StringComparison.OrdinalIgnoreCase))
+            {
+                // Remove the section header
+                lines.RemoveAt(i);
+                // Remove indented lines that follow (the section body)
+                while (i < lines.Count)
+                {
+                    var next = lines[i].Trim();
+                    if (next.StartsWith('[') || (next.Length > 0 && !char.IsWhiteSpace(lines[i][0]) && !next.StartsWith("path", StringComparison.OrdinalIgnoreCase)))
+                        break;
+                    lines.RemoveAt(i);
+                }
+                // Remove any trailing blank line
+                if (i < lines.Count && string.IsNullOrWhiteSpace(lines[i]))
+                    lines.RemoveAt(i);
+                break;
+            }
+            i++;
+        }
+
+        await environment.WriteFileAsync(GitConfigTargetPath, string.Join('\n', lines), cancellationToken);
     }
 
     public bool IsGitRepo(string directory) =>

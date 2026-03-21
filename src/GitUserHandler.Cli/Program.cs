@@ -12,6 +12,14 @@ if (args is ["--version" or "-v"])
     return;
 }
 
+// Check for updates before running any command (skip for update/help/version flags)
+if (args.Length > 0
+    && !args[0].Equals("update", StringComparison.OrdinalIgnoreCase)
+    && !args.Contains("--help") && !args.Contains("-h"))
+{
+    await UpdateNotifier.CheckAsync();
+}
+
 var app = ConsoleApp.Create();
 app.Add<GitUserHandler.Cli.Commands.SetupCommands>();
 app.Add<GitUserHandler.Cli.Commands.UpdateCommands>();
@@ -24,6 +32,32 @@ namespace GitUserHandler.Cli
     {
         public static SetupService CreateSetupService() =>
             new(new EnvironmentProvider());
+    }
+
+    internal static class UpdateNotifier
+    {
+        public static async Task CheckAsync()
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var service = new UpdateService();
+                var result = await service.CheckForUpdateAsync(cts.Token);
+
+                if (result is not null)
+                {
+                    var theme = AppTheme.Default;
+                    AnsiConsole.MarkupLine(
+                        $"[{theme.Warning}]Update available:[/] [{theme.Emphasis}]{Markup.Escape(result.Value.Version.ToString())}[/]  " +
+                        $"[{theme.Muted}]Run[/] [{theme.Command}]gituser update[/] [{theme.Muted}]to install.[/]");
+                    AnsiConsole.WriteLine();
+                }
+            }
+            catch
+            {
+                // Silently ignore — don't delay the user's command
+            }
+        }
     }
 
     internal static class VersionCommand

@@ -145,9 +145,35 @@ public sealed class SetupCommands
             return false;
         }
 
+        bool gpgSign;
+        string? gpgFormat = null;
+        string? signingKey = null;
+        try
+        {
+            gpgSign = AnsiConsole.Confirm($"[{Theme.Command}]Enable commit signing?[/]", defaultValue: false);
+            if (gpgSign)
+            {
+                gpgFormat = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title($"[{Theme.Command}]Signing format[/]:")
+                        .HighlightStyle(ThemeHelper.ParseStyle(Theme.Command))
+                        .AddChoices("ssh", "gpg", "x509"));
+
+                signingKey = AnsiConsole.Prompt(
+                    new TextPrompt<string>($"[{Theme.Command}]Signing key path[/] [{Theme.Muted}](e.g. ~/.ssh/id_ed25519.pub)[/]:")
+                        .Validate(input => !string.IsNullOrWhiteSpace(input)
+                            ? ValidationResult.Success()
+                            : ValidationResult.Error($"[{Theme.Error}]Signing key is required when signing is enabled.[/]")));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+
         term = term.Trim().ToLowerInvariant();
         var credHost = string.IsNullOrWhiteSpace(credentialHost) ? null : credentialHost.Trim();
-        var path = await service.CreateUserProfileConfigAsync(term, name, email, credHost);
+        var path = await service.CreateUserProfileConfigAsync(term, name, email, credHost, gpgSign, gpgFormat, signingKey);
         AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Created [{Theme.Emphasis}]{Markup.Escape(Path.GetFileName(path))}[/] in [{Theme.Emphasis}]{Markup.Escape(service.TargetDir)}[/]");
         return true;
     }
