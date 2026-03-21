@@ -6,12 +6,25 @@ internal static class SpectreHelpRenderer
 {
     private static AppTheme Theme => AppTheme.Default;
 
+    private static readonly Dictionary<string, (string Heading, int Order)> CommandGroups = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["setup"]     = ("Global Config", 1),
+        ["reset"]     = ("Global Config", 1),
+        ["add"]       = ("Global Config", 1),
+        ["edit"]      = ("Global Config", 1),
+        ["list"]      = ("Global Config", 1),
+        ["apply"]     = ("Repository", 2),
+        ["clear"]     = ("Repository", 2),
+        ["current"]   = ("Repository", 2),
+        ["localsign"] = ("Repository", 2),
+        ["update"]    = ("CLI", 3),
+    };
+
     public static void Render(string message)
     {
-        // ConsoleAppFramework emits help as a single pre-formatted string.
-        // Parse sections and re-render with Spectre.Console styling.
-
         var lines = message.Split('\n');
+        var inCommandsSection = false;
+        var commandLines = new List<(string Name, string Line)>();
 
         foreach (var rawLine in lines)
         {
@@ -26,11 +39,23 @@ internal static class SpectreHelpRenderer
             }
             else if (line == "Commands:")
             {
-                AnsiConsole.MarkupLine($"[{Theme.Heading}]Commands[/]");
+                inCommandsSection = true;
             }
             else if (line == "Options:")
             {
+                // Flush commands before options
+                if (inCommandsSection)
+                {
+                    RenderGroupedCommands(commandLines);
+                    inCommandsSection = false;
+                }
                 AnsiConsole.MarkupLine($"[{Theme.Heading}]Options[/]");
+            }
+            else if (inCommandsSection && line.StartsWith("  ") && line.TrimStart().Length > 0)
+            {
+                var trimmed = line.TrimStart();
+                var cmdName = trimmed.Split(' ', 2)[0];
+                commandLines.Add((cmdName, line));
             }
             else if (line.StartsWith("  ") && line.TrimStart().Length > 0)
             {
@@ -42,6 +67,12 @@ internal static class SpectreHelpRenderer
                 AnsiConsole.WriteLine();
             }
         }
+
+        // If commands section was the last thing, flush it
+        if (inCommandsSection)
+        {
+            RenderGroupedCommands(commandLines);
+        }
     }
 
     public static void RenderError(string message)
@@ -49,12 +80,27 @@ internal static class SpectreHelpRenderer
         AnsiConsole.MarkupLine($"[{Theme.Error}]Error:[/] {Markup.Escape(message)}");
     }
 
+    private static void RenderGroupedCommands(List<(string Name, string Line)> commandLines)
+    {
+        var grouped = commandLines
+            .GroupBy(c => CommandGroups.TryGetValue(c.Name, out var g) ? g : ("Other", 99))
+            .OrderBy(g => g.Key.Item2);
+
+        foreach (var group in grouped)
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Heading}]{Markup.Escape(group.Key.Item1)}[/]");
+            foreach (var cmd in group)
+            {
+                RenderDetailLine(cmd.Line);
+            }
+            AnsiConsole.WriteLine();
+        }
+    }
+
     private static void RenderDetailLine(string line)
     {
         var trimmed = line.TrimStart();
 
-        // Command lines: "  name    description"
-        // Option lines:  "  --name <type>    description  [Required]/[Default: x]"
         var parts = System.Text.RegularExpressions.Regex.Split(trimmed, @"\s{2,}");
 
         if (parts.Length >= 2)
