@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate version
+        id: version
+        run: |
+          # Get latest tag or default to v0.0.0
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+
+          # Strip 'v' prefix and split
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # Count commits since last tag
+          if git describe --tags --abbrev=0 2>/dev/null; then
+            COMMITS=$(git rev-list "${LATEST_TAG}..HEAD" --count)
+          else
+            COMMITS=$(git rev-list HEAD --count)
+          fi
+
+          # Bump patch by commit count
+          PATCH=$((PATCH + COMMITS))
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "New version: $NEW_VERSION"
+
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact: gituser-linux-x64
+          - os: ubuntu-latest
+            rid: linux-arm64
+            artifact: gituser-linux-arm64
+          - os: macos-latest
+            rid: osx-arm64
+            artifact: gituser-osx-arm64
+          - os: macos-13
+            rid: osx-x64
+            artifact: gituser-osx-x64
+          - os: windows-latest
+            rid: win-x64
+            artifact: gituser-win-x64
+          - os: windows-latest
+            rid: win-arm64
+            artifact: gituser-win-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Publish
+        run: >
+          dotnet publish src/GitUserHandler.Cli
+          -c Release
+          -r ${{ matrix.rid }}
+          -o publish
+          -p:PublishSingleFile=true
+          -p:PublishAot=false
+          -p:DebugType=none
+          -p:Version=${{ needs.version.outputs.version }}
+          --no-self-contained
+
+      - name: Archive (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          cd publish
+          chmod +x gituser
+          tar -czf ../${{ matrix.artifact }}.tar.gz gituser
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path publish/gituser.exe -DestinationPath ${{ matrix.artifact }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.zip
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          VERSION="${{ needs.version.outputs.version }}"
+
+          # Collect all archives
+          FILES=$(find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \))
+
+          # Create tag and release
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create "$TAG" \
+            --title "gituser $VERSION" \
+            --generate-notes \
+            $FILES
