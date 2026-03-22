@@ -56,7 +56,10 @@ public sealed class EnvironmentProvider : IEnvironmentProvider
     private async Task AppendToShellProfileAsync(string name, string value, CancellationToken cancellationToken)
     {
         var profilePath = GetShellProfilePath();
-        var exportLine = $"export {name}=\"{value}\"";
+
+        // Shell-escape the value to prevent command injection
+        var escapedValue = InputValidator.EscapeShellValue(value);
+        var exportLine = $"export {name}={escapedValue}";
 
         if (File.Exists(profilePath))
         {
@@ -88,14 +91,23 @@ public sealed class EnvironmentProvider : IEnvironmentProvider
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
             var zshrc = Path.Combine(home, ".zshrc");
-            if (File.Exists(zshrc))
+            if (IsRegularFile(zshrc))
                 return zshrc;
         }
 
         var bashrc = Path.Combine(home, ".bashrc");
-        if (File.Exists(bashrc))
+        if (IsRegularFile(bashrc))
             return bashrc;
 
         return Path.Combine(home, ".profile");
+    }
+
+    private static bool IsRegularFile(string path)
+    {
+        if (!File.Exists(path))
+            return false;
+
+        var info = new FileInfo(path);
+        return (info.Attributes & FileAttributes.ReparsePoint) == 0;
     }
 }

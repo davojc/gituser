@@ -74,38 +74,47 @@ public sealed class UpdateService
         var tempDir = Path.Combine(Path.GetTempPath(), $"gituser-update-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
 
-        var archivePath = Path.Combine(tempDir, assetName);
-
-        using (var response = await Http.GetAsync(assetUrl, cancellationToken))
+        try
         {
-            response.EnsureSuccessStatusCode();
-            await using var fs = File.Create(archivePath);
-            await response.Content.CopyToAsync(fs, cancellationToken);
-        }
+            var archivePath = Path.Combine(tempDir, assetName);
 
-        if (checksumUrl is not null)
+            using (var response = await Http.GetAsync(assetUrl, cancellationToken))
+            {
+                response.EnsureSuccessStatusCode();
+                await using var fs = File.Create(archivePath);
+                await response.Content.CopyToAsync(fs, cancellationToken);
+            }
+
+            if (checksumUrl is not null)
+            {
+                await VerifyChecksumAsync(archivePath, checksumUrl, cancellationToken);
+            }
+
+            var extractDir = Path.Combine(tempDir, "extracted");
+            Directory.CreateDirectory(extractDir);
+
+            if (assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            {
+                ZipFile.ExtractToDirectory(archivePath, extractDir);
+            }
+            else if (assetName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+            {
+                await ExtractTarGzAsync(archivePath, extractDir, cancellationToken);
+            }
+
+            // Find the executable in extracted files
+            var exeName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "gituser.exe" : "gituser";
+            var extractedExe = Directory.GetFiles(extractDir, exeName, SearchOption.AllDirectories).FirstOrDefault()
+                ?? throw new FileNotFoundException($"Could not find {exeName} in downloaded archive.");
+
+            return extractedExe;
+        }
+        catch
         {
-            await VerifyChecksumAsync(archivePath, checksumUrl, cancellationToken);
+            // Clean up temp directory on failure
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best effort */ }
+            throw;
         }
-
-        var extractDir = Path.Combine(tempDir, "extracted");
-        Directory.CreateDirectory(extractDir);
-
-        if (assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-        {
-            ZipFile.ExtractToDirectory(archivePath, extractDir);
-        }
-        else if (assetName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
-        {
-            await ExtractTarGzAsync(archivePath, extractDir, cancellationToken);
-        }
-
-        // Find the executable in extracted files
-        var exeName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "gituser.exe" : "gituser";
-        var extractedExe = Directory.GetFiles(extractDir, exeName, SearchOption.AllDirectories).FirstOrDefault()
-            ?? throw new FileNotFoundException($"Could not find {exeName} in downloaded archive.");
-
-        return extractedExe;
     }
 
     public static void ReplaceCurrentBinary(string newBinaryPath)
@@ -212,9 +221,38 @@ public sealed class UpdateService
             var size = Convert.ToInt64(sizeStr, 8);
             var typeFlag = (char)buffer[156];
 
-            if (typeFlag is '0' or '\0' && size > 0 && !string.IsNullOrEmpty(name))
+            // Reject symlinks and other non-regular file types
+            if (typeFlag is not ('0' or '\0'))
             {
-                var outputPath = Path.Combine(outputDir, Path.GetFileName(name));
+                if (size > 0)
+                {
+                    var totalBlocks = (size + 511) / 512 * 512;
+                    var skip = new byte[8192];
+                    var rem = totalBlocks;
+                    while (rem > 0)
+                    {
+                        var toRead = (int)Math.Min(skip.Length, rem);
+                        var read = await stream.ReadAsync(skip.AsMemory(0, toRead), cancellationToken);
+                        if (read == 0) break;
+                        rem -= read;
+                    }
+                }
+                continue;
+            }
+
+            if (size > 0 && !string.IsNullOrEmpty(name))
+            {
+                var safeName = Path.GetFileName(name);
+                if (string.IsNullOrEmpty(safeName) || safeName.Contains(".."))
+                    throw new InvalidOperationException($"Tar entry has unsafe filename: {name}");
+
+                var outputPath = Path.Combine(outputDir, safeName);
+                // Verify the resolved path is within the output directory
+                var fullOutput = Path.GetFullPath(outputPath);
+                var fullDir = Path.GetFullPath(outputDir + Path.DirectorySeparatorChar);
+                if (!fullOutput.StartsWith(fullDir, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"Tar entry would extract outside target directory: {name}");
+
                 await using var outFile = File.Create(outputPath);
                 var remaining = size;
                 var readBuf = new byte[8192];
@@ -234,14 +272,14 @@ public sealed class UpdateService
             }
             else if (size > 0)
             {
-                // Skip non-file entries
+                // Skip entries with no name
                 var totalBlocks = (size + 511) / 512 * 512;
-                var skip = new byte[8192];
+                var skipBuf = new byte[8192];
                 var remaining = totalBlocks;
                 while (remaining > 0)
                 {
-                    var toRead = (int)Math.Min(skip.Length, remaining);
-                    var read = await stream.ReadAsync(skip.AsMemory(0, toRead), cancellationToken);
+                    var toRead = (int)Math.Min(skipBuf.Length, remaining);
+                    var read = await stream.ReadAsync(skipBuf.AsMemory(0, toRead), cancellationToken);
                     if (read == 0) break;
                     remaining -= read;
                 }

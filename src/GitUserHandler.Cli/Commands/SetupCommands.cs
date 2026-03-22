@@ -123,9 +123,9 @@ public sealed class SetupCommands
         {
             term = AnsiConsole.Prompt(
                 new TextPrompt<string>($"[{Theme.Command}]Enter a label for this user profile[/] [{Theme.Muted}](e.g. work, personal)[/]:")
-                    .Validate(input => !string.IsNullOrWhiteSpace(input)
+                    .Validate(input => InputValidator.IsValidLabel(input.Trim())
                         ? ValidationResult.Success()
-                        : ValidationResult.Error($"[{Theme.Error}]A label is required.[/]")));
+                        : ValidationResult.Error($"[{Theme.Error}]Label must be alphanumeric with hyphens only.[/]")));
         }
         catch (OperationCanceledException)
         {

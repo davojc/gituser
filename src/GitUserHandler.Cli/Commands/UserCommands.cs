@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using ConsoleAppFramework;
+using GitUserHandler.Cli.Services;
 using Spectre.Console;
 
 namespace GitUserHandler.Cli.Commands;
@@ -103,9 +104,9 @@ public sealed class UserCommands
 
         var label = AnsiConsole.Prompt(
             new TextPrompt<string>($"[{Theme.Command}]Label[/] [{Theme.Muted}](e.g. work, personal)[/]:")
-                .Validate(input => !string.IsNullOrWhiteSpace(input)
+                .Validate(input => InputValidator.IsValidLabel(input.Trim())
                     ? ValidationResult.Success()
-                    : ValidationResult.Error($"[{Theme.Error}]Label is required.[/]")));
+                    : ValidationResult.Error($"[{Theme.Error}]Label must be alphanumeric with hyphens only.[/]")));
 
         var credentialHost = AnsiConsole.Prompt(
             new TextPrompt<string>($"[{Theme.Command}]Credential host[/] [{Theme.Muted}](leave empty to skip)[/]:")
@@ -232,9 +233,9 @@ public sealed class UserCommands
         var label = AnsiConsole.Prompt(
             new TextPrompt<string>($"[{Theme.Command}]Label[/]:")
                 .DefaultValue(selectedLabel)
-                .Validate(input => !string.IsNullOrWhiteSpace(input)
+                .Validate(input => InputValidator.IsValidLabel(input.Trim())
                     ? ValidationResult.Success()
-                    : ValidationResult.Error($"[{Theme.Error}]Label is required.[/]")));
+                    : ValidationResult.Error($"[{Theme.Error}]Label must be alphanumeric with hyphens only.[/]")));
 
         name = name.Trim();
         email = email.Trim();

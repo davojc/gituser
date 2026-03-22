@@ -68,13 +68,20 @@ public sealed class SetupService(IEnvironmentProvider environment)
         bool gpgSign = false, string? gpgFormat = null, string? signingKey = null,
         CancellationToken cancellationToken = default)
     {
+        if (!InputValidator.IsValidLabel(term))
+            throw new ArgumentException($"Invalid label '{term}'. Use only alphanumeric characters and hyphens.");
+
+        var escapedName = InputValidator.EscapeGitConfigValue(name);
+        var escapedEmail = InputValidator.EscapeGitConfigValue(email);
+
         var fileName = $".gitconfig-{term}";
         var filePath = Path.Combine(TargetDir, fileName);
-        var content = $"[user]{Environment.NewLine}\tname = {name}{Environment.NewLine}\temail = {email}{Environment.NewLine}";
+        var content = $"[user]{Environment.NewLine}\tname = {escapedName}{Environment.NewLine}\temail = {escapedEmail}{Environment.NewLine}";
 
         if (gpgSign && !string.IsNullOrWhiteSpace(signingKey))
         {
-            content += $"\tsigningkey = {signingKey.Trim()}{Environment.NewLine}";
+            var escapedKey = InputValidator.EscapeGitConfigValue(signingKey.Trim());
+            content += $"\tsigningkey = {escapedKey}{Environment.NewLine}";
         }
 
         if (gpgSign)
@@ -82,14 +89,15 @@ public sealed class SetupService(IEnvironmentProvider environment)
             content += $"{Environment.NewLine}[commit]{Environment.NewLine}\tgpgsign = true{Environment.NewLine}";
             if (!string.IsNullOrWhiteSpace(gpgFormat))
             {
-                content += $"{Environment.NewLine}[gpg]{Environment.NewLine}\tformat = {gpgFormat.Trim()}{Environment.NewLine}";
+                var escapedFormat = InputValidator.EscapeGitConfigValue(gpgFormat.Trim());
+                content += $"{Environment.NewLine}[gpg]{Environment.NewLine}\tformat = {escapedFormat}{Environment.NewLine}";
             }
         }
 
         if (!string.IsNullOrWhiteSpace(credentialHost))
         {
-            var host = credentialHost.Trim().TrimEnd('/');
-            content += $"{Environment.NewLine}[credential \"{host}\"]{Environment.NewLine}\tusername = {name}{Environment.NewLine}";
+            var escapedHost = InputValidator.EscapeGitConfigValue(credentialHost.Trim().TrimEnd('/'));
+            content += $"{Environment.NewLine}[credential \"{escapedHost}\"]{Environment.NewLine}\tusername = {escapedName}{Environment.NewLine}";
         }
 
         await environment.WriteFileAsync(filePath, content, cancellationToken);
