@@ -260,73 +260,70 @@ public sealed class UserCommands
         AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Updated [{Theme.Emphasis}]{Markup.Escape(Path.GetFileName(path))}[/] in [{Theme.Emphasis}]{Markup.Escape(service.TargetDir)}[/]");
     }
 
-    /// <summary>Show the current git user configuration and its origin.</summary>
+    /// <summary>Show the effective git user configuration for the current context.</summary>
     [Command("current")]
     public async Task Current()
     {
-        using var process = new Process
+        var keys = new[]
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "git",
-                Arguments = "config --list --show-origin --show-scope",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
+            "user.name", "user.email", "user.signingkey",
+            "commit.gpgsign", "gpg.format",
         };
-
-        process.Start();
-        var output = await process.StandardOutput.ReadToEndAsync();
-        var error = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0)
-        {
-            AnsiConsole.MarkupLine($"[{Theme.Error}]git config failed:[/] [{Theme.Muted}]{Markup.Escape(error.Trim())}[/]");
-            return;
-        }
-
-        var relevantKeys = new[] { "user.", "commit.gpgsign", "gpg.", "credential." };
-        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Where(l => relevantKeys.Any(k => l.Contains(k, StringComparison.OrdinalIgnoreCase)))
-            .Select(l => l.TrimEnd('\r'))
-            .ToList();
-
-        if (lines.Count == 0)
-        {
-            AnsiConsole.MarkupLine($"[{Theme.Warning}]No git user or signing configuration found.[/]");
-            return;
-        }
 
         var table = new Table()
             .Border(TableBorder.Rounded)
             .BorderColor(ThemeHelper.ParseColor(Theme.TableBorder))
-            .AddColumn(new TableColumn($"[{Theme.TableHeader}]Scope[/]"))
-            .AddColumn(new TableColumn($"[{Theme.TableHeader}]Origin[/]"))
             .AddColumn(new TableColumn($"[{Theme.TableHeader}]Key[/]"))
-            .AddColumn(new TableColumn($"[{Theme.TableHeader}]Value[/]"));
+            .AddColumn(new TableColumn($"[{Theme.TableHeader}]Value[/]"))
+            .AddColumn(new TableColumn($"[{Theme.TableHeader}]Scope[/]"))
+            .AddColumn(new TableColumn($"[{Theme.TableHeader}]Origin[/]"));
 
-        foreach (var line in lines)
+        var hasRows = false;
+
+        foreach (var key in keys)
         {
-            // Format: "scope\tfile:path\tkey=value"
-            var parts = line.Split('\t');
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "git",
+                    Arguments = $"config --show-origin --show-scope --get {key}",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            var output = (await process.StandardOutput.ReadToEndAsync()).Trim();
+            await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0 || string.IsNullOrEmpty(output))
+                continue;
+
+            // Format: "scope\tfile:path\tvalue"
+            var parts = output.Split('\t');
             if (parts.Length >= 3)
             {
                 var scope = parts[0].Trim();
                 var origin = parts[1].Trim();
-                var keyValue = parts[2];
-                var eqIndex = keyValue.IndexOf('=');
-                var key = eqIndex >= 0 ? keyValue[..eqIndex] : keyValue;
-                var value = eqIndex >= 0 ? keyValue[(eqIndex + 1)..] : "";
+                var value = parts[2].Trim();
 
                 table.AddRow(
-                    Markup.Escape(scope),
-                    $"[{Theme.Muted}]{Markup.Escape(origin)}[/]",
                     $"[{Theme.Command}]{Markup.Escape(key)}[/]",
-                    $"[{Theme.Emphasis}]{Markup.Escape(value)}[/]");
+                    $"[{Theme.Emphasis}]{Markup.Escape(value)}[/]",
+                    Markup.Escape(scope),
+                    $"[{Theme.Muted}]{Markup.Escape(origin)}[/]");
+                hasRows = true;
             }
+        }
+
+        if (!hasRows)
+        {
+            AnsiConsole.MarkupLine($"[{Theme.Warning}]No git user or signing configuration found.[/]");
+            return;
         }
 
         AnsiConsole.Write(table);
