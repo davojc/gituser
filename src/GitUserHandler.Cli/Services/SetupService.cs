@@ -412,6 +412,101 @@ public sealed class SetupService(IEnvironmentProvider environment)
             cancellationToken);
     }
 
+    public async Task SetLocalCredentialUsernameAsync(
+        string repoDir, string credentialHost, string username,
+        CancellationToken cancellationToken = default)
+    {
+        var localConfigPath = Path.Combine(repoDir, ".git", "config");
+        var escapedHost = InputValidator.EscapeGitConfigValue(credentialHost.TrimEnd('/'));
+        var escapedUsername = InputValidator.EscapeGitConfigValue(username);
+        var sectionHeader = $"[credential \"{escapedHost}\"]";
+        var usernameLine = $"\tusername = {escapedUsername}";
+
+        var content = environment.FileExists(localConfigPath)
+            ? await environment.ReadFileAsync(localConfigPath, cancellationToken)
+            : string.Empty;
+
+        var lines = content.Split('\n').ToList();
+        var replaced = false;
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var trimmed = lines[i].Trim();
+            if (!trimmed.StartsWith("[credential", StringComparison.OrdinalIgnoreCase)
+                || !trimmed.Contains(escapedHost, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            for (var j = i + 1; j < lines.Count; j++)
+            {
+                var innerTrimmed = lines[j].Trim();
+                if (innerTrimmed.StartsWith('['))
+                {
+                    lines.Insert(j, usernameLine);
+                    replaced = true;
+                    break;
+                }
+                if (Regex.IsMatch(innerTrimmed, @"^username\s*=", RegexOptions.IgnoreCase))
+                {
+                    lines[j] = usernameLine;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced)
+            {
+                lines.Add(usernameLine);
+                replaced = true;
+            }
+            break;
+        }
+
+        if (!replaced)
+        {
+            if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
+                lines.Add("");
+            lines.Add(sectionHeader);
+            lines.Add(usernameLine);
+        }
+
+        await environment.WriteFileAsync(localConfigPath, string.Join('\n', lines), cancellationToken);
+    }
+
+    public async Task RemoveLocalCredentialUsernameAsync(
+        string repoDir, string credentialHost,
+        CancellationToken cancellationToken = default)
+    {
+        var localConfigPath = Path.Combine(repoDir, ".git", "config");
+        if (!environment.FileExists(localConfigPath))
+            return;
+
+        var escapedHost = InputValidator.EscapeGitConfigValue(credentialHost.TrimEnd('/'));
+        var content = await environment.ReadFileAsync(localConfigPath, cancellationToken);
+        var lines = content.Split('\n').ToList();
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var trimmed = lines[i].Trim();
+            if (!trimmed.StartsWith("[credential", StringComparison.OrdinalIgnoreCase)
+                || !trimmed.Contains(escapedHost, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            for (var j = i + 1; j < lines.Count; j++)
+            {
+                var innerTrimmed = lines[j].Trim();
+                if (innerTrimmed.StartsWith('['))
+                    break;
+                if (Regex.IsMatch(innerTrimmed, @"^username\s*=", RegexOptions.IgnoreCase))
+                {
+                    lines.RemoveAt(j);
+                    break;
+                }
+            }
+            break;
+        }
+
+        await environment.WriteFileAsync(localConfigPath, string.Join('\n', lines), cancellationToken);
+    }
+
     internal static string NormalizeGitDir(string repoDir)
     {
         var normalized = repoDir.Replace('\\', '/');

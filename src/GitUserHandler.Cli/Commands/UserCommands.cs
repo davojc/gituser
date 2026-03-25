@@ -42,7 +42,7 @@ public sealed class UserCommands
 
     /// <summary>Apply a user profile to the current git repository.</summary>
     [Command("apply")]
-    public async Task Apply()
+    public async Task Apply([Argument] string? name = null)
     {
         var service = ServiceFactory.CreateSetupService();
         var cwd = Directory.GetCurrentDirectory();
@@ -60,17 +60,32 @@ public sealed class UserCommands
             return;
         }
 
-        var profileMap = profiles.ToDictionary(
-            p => $"{p.Label}  {p.Name} <{p.Email}>",
-            p => p.Label);
+        string selectedLabel;
 
-        var selected = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title($"[{Theme.Command}]Select a user profile[/]:")
-                .HighlightStyle(ThemeHelper.ParseStyle(Theme.Command))
-                .AddChoices(profileMap.Keys));
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            var match = profiles.FirstOrDefault(p => string.Equals(p.Label, name.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (match == default)
+            {
+                AnsiConsole.MarkupLine($"[{Theme.Error}]Profile '{Markup.Escape(name.Trim())}' not found.[/] Use [{Theme.Command}]list[/] to see available profiles.");
+                return;
+            }
+            selectedLabel = match.Label;
+        }
+        else
+        {
+            var profileMap = profiles.ToDictionary(
+                p => $"{p.Label}  {p.Name} <{p.Email}>",
+                p => p.Label);
 
-        var selectedLabel = profileMap[selected];
+            var selected = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title($"[{Theme.Command}]Select a user profile[/]:")
+                    .HighlightStyle(ThemeHelper.ParseStyle(Theme.Command))
+                    .AddChoices(profileMap.Keys));
+
+            selectedLabel = profileMap[selected];
+        }
         var existingLabel = await service.GetExistingIncludeIfLabelAsync(cwd);
 
         if (existingLabel is not null && !string.Equals(existingLabel, selectedLabel, StringComparison.OrdinalIgnoreCase))
@@ -81,6 +96,14 @@ public sealed class UserCommands
         }
 
         await service.InsertIncludeIfAsync(cwd, selectedLabel);
+
+        var details = await service.GetProfileDetailsAsync(selectedLabel);
+        if (details?.CredentialHost is not null)
+        {
+            await service.SetLocalCredentialUsernameAsync(cwd, details.CredentialHost, details.Name);
+            AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Set local [{Theme.Command}]credential.username[/] = [{Theme.Emphasis}]{Markup.Escape(details.Name)}[/] for [{Theme.Emphasis}]{Markup.Escape(details.CredentialHost)}[/].");
+        }
+
         AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Inserted [{Theme.Command}]includeIf[/] for [{Theme.Emphasis}]{Markup.Escape(cwd)}[/] using profile [{Theme.Emphasis}]{Markup.Escape(selectedLabel)}[/].");
     }
 
@@ -392,8 +415,15 @@ public sealed class UserCommands
             return;
         }
 
+        var profile = await service.GetProfileDetailsAsync(existingLabel);
         await service.RemoveIncludeIfAsync(cwd);
         AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Removed [{Theme.Command}]includeIf[/] for [{Theme.Emphasis}]{Markup.Escape(cwd)}[/] (was [{Theme.Emphasis}]{Markup.Escape(existingLabel)}[/]).");
+
+        if (profile?.CredentialHost is not null)
+        {
+            await service.RemoveLocalCredentialUsernameAsync(cwd, profile.CredentialHost);
+            AnsiConsole.MarkupLine($"[{Theme.Success}]\u2713[/] Removed local [{Theme.Command}]credential.username[/] for [{Theme.Emphasis}]{Markup.Escape(profile.CredentialHost)}[/].");
+        }
 
         var removeGpgSign = AnsiConsole.Confirm($"[{Theme.Command}]Also remove local commit.gpgsign setting?[/]", defaultValue: true);
         if (removeGpgSign)
